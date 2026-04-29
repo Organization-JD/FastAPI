@@ -1,6 +1,39 @@
-from fastapi import FastAPI, Query, Body, HTTPException, Path
+from datetime import datetime
+from fastapi import FastAPI, Query, Body, HTTPException, Path, status, Depends
 from typing import List, Optional, Union, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+import os
+from sqlalchemy import create_engine, Integer, String, Text, DateTime
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./blog.db")
+print("Using database: ", DATABASE_URL)
+
+engine_kwargs = {}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+engine = create_engine(DATABASE_URL, echo=True, future=True, **engine_kwargs)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, class_=Session)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+class Base(DeclarativeBase):
+    pass
+
+class PostORM(Base):
+    __tablename__ = "posts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    title: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="My FastAPI Application")
 
@@ -93,6 +126,8 @@ class PostUpdate(BaseModel):
 class PostPublic(PostBase):
     id: int
 
+    model_config = ConfigDict(from_attributes=True)
+
 class PostSummary(BaseModel):
     id: int
     title: str
@@ -179,8 +214,8 @@ def filter_by_tags(
         post for post in BLOG_POST if any(tag["name"].lower() in tags_lower for tag in post.get("tags", []))
     ]
 
-@app.post("/posts", response_model=PostPublic, response_description="The created blog post")
-def create_post(post: PostCreate):
+@app.post("/posts", response_model=PostPublic, response_description="The created blog post", status_code=status.HTTP_201_CREATED)
+def create_post(post: PostCreate, db: Session = Depends(get_db)):
     new_id = (BLOG_POSTS[-1]["id"]+1) if BLOG_POSTS else 1
     new_post = {"id": new_id, "title": post.title, "content": post.content, "author": post.author.model_dump() if post.author else None, "tags": [tag.model_dump() for tag in post.tags]}
     BLOG_POSTS.append(new_post)
