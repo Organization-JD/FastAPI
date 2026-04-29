@@ -3,8 +3,9 @@ from fastapi import FastAPI, Query, Body, HTTPException, Path, status, Depends
 from typing import List, Optional, Union, Literal
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 import os
-from sqlalchemy import create_engine, Integer, String, Text, DateTime
+from sqlalchemy import create_engine, Integer, String, Text, DateTime, select, func
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.exc import SQLAlchemyError
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./blog.db")
 print("Using database: ", DATABASE_URL)
@@ -164,18 +165,25 @@ def list_posts(
     per_page: int = Query(10, ge=1, le=50, description="Number of posts to return"),
     page: int = Query(1, ge=1, description="Page number"),
     order_by: Literal["id", "title"] = Query("id", description="Sort order of the posts"),
-    direction: Literal["asc", "desc"] = Query("asc", description="Sort direction of the posts")
+    direction: Literal["asc", "desc"] = Query("asc", description="Sort direction of the posts"),
+    db: Session = Depends(get_db)
     ):
-    results = BLOG_POST
+    results = select(PostORM)
     if query:
-        results = [post for post in results if query.lower() in post["title"].lower()]
-    total = len(results)
+        results = results.where(PostORM.title.ilike(f"%{query}%"))
+    total = db.scalar(select(func.count()).select_from(results.subquery())) or 0
     offset = (page - 1) * per_page
-    items=results[offset: offset + per_page]
     total_pages = (total + per_page - 1) // per_page
     has_prev = offset > 0
     has_next = offset + per_page < total
-    results = sorted(results, key=lambda post: post[order_by], reverse=(direction == "desc"))
+    if order_by == "id":
+        order_col = PostORM.id
+    else:
+        order_col = func.lower(PostORM.title)
+
+    results = results.order_by(order_col.asc() if direction == "asc" else order_col.desc()).offset(offset).limit(per_page)
+    items = db.scalars(results).all()
+
     return PostPaginated(
         page=offset // per_page + 1,
         per_page=per_page,
@@ -216,10 +224,15 @@ def filter_by_tags(
 
 @app.post("/posts", response_model=PostPublic, response_description="The created blog post", status_code=status.HTTP_201_CREATED)
 def create_post(post: PostCreate, db: Session = Depends(get_db)):
-    new_id = (BLOG_POST[-1]["id"]+1) if BLOG_POST else 1
-    new_post = {"id": new_id, "title": post.title, "content": post.content, "author": post.author.model_dump() if post.author else None, "tags": [tag.model_dump() for tag in post.tags]}
-    BLOG_POST.append(new_post)
-    return new_post
+    new_post =  PostORM(title=post.title, content=post.content)
+    try:
+        db.add(new_post)
+        db.commit()
+        db.refresh(new_post)
+        return new_post
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Error creating post")
 
 @app.put("/posts/{post_id}", response_model=PostPublic, response_description="The updated blog post", response_model_exclude_none=True)
 def update_post(post_id: int, data: PostUpdate):
