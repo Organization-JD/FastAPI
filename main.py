@@ -193,7 +193,7 @@ def list_posts(
 
 @app.get("/posts/{post_id}", response_model=Union[PostPublic, PostSummary], response_description="Returns either the full post or a summary based on the 'include_content' query parameter")
 def get_post(post_id: int = Path(..., ge=1, title="The ID of the post to retrieve", description="The ID of the post to retrieve", example=1), include_content: Optional[bool] = Query(default=True, description="Include content in the response")):
-    for post in BLOG_POSTS:
+    for post in BLOG_POST:
         if post_id == post["id"]:
             if not include_content:
                 return {"id": post["id"], "title": post["title"]}
@@ -216,14 +216,14 @@ def filter_by_tags(
 
 @app.post("/posts", response_model=PostPublic, response_description="The created blog post", status_code=status.HTTP_201_CREATED)
 def create_post(post: PostCreate, db: Session = Depends(get_db)):
-    new_id = (BLOG_POSTS[-1]["id"]+1) if BLOG_POSTS else 1
+    new_id = (BLOG_POST[-1]["id"]+1) if BLOG_POST else 1
     new_post = {"id": new_id, "title": post.title, "content": post.content, "author": post.author.model_dump() if post.author else None, "tags": [tag.model_dump() for tag in post.tags]}
-    BLOG_POSTS.append(new_post)
+    BLOG_POST.append(new_post)
     return new_post
 
 @app.put("/posts/{post_id}", response_model=PostPublic, response_description="The updated blog post", response_model_exclude_none=True)
 def update_post(post_id: int, data: PostUpdate):
-    for post in BLOG_POSTS:
+    for post in BLOG_POST:
         if post["id"] == post_id:
             payload = data.model_dump(exclude_unset=True)
             if "title" in payload:
